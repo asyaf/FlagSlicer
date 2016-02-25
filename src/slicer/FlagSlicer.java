@@ -80,12 +80,10 @@ public class FlagSlicer {
 		Enumeration<JarEntry> entries = jar.entries();
 		while (entries.hasMoreElements()) {
 			JarEntry file = (JarEntry) entries.nextElement();
-			System.out.println(file.getName());
 			if (!file.getName().endsWith(fileName)) {
 				continue;
 			}
 			pathToFile = jarPath + File.separator + fileName;
-			System.out.println("path to file: " + pathToFile);
 			File f = new File(pathToFile);
 			InputStream is = jar.getInputStream(file); // get the input stream
 			FileOutputStream fos = new FileOutputStream(f);
@@ -121,9 +119,8 @@ public class FlagSlicer {
 	private int findParameterIndex(IMethod method) {
 		int flagInd = -1;
 		for(int i = 0; i < method.getNumberOfParameters(); ++i) {
-			System.out.println(method.getNumberOfParameters());
 			String param = method.getLocalVariableName(0, i);
-			System.out.println(param);
+			
 			if(param.equals(flagName)) {
 				flagInd = i;
 			}
@@ -163,6 +160,7 @@ public class FlagSlicer {
 	}
 	
 	private void printSlicedLines(TreeSet<Integer> lineNumbers) {
+		System.out.println("Result slice: ");
 		Iterator<Integer> iter = lineNumbers.iterator();
 		while (iter.hasNext()) {
 			int lineNum = iter.next();
@@ -174,42 +172,10 @@ public class FlagSlicer {
 		}
 	}
 	
-	private void printSlicedLines(Collection<Statement> slice) {
-		TreeSet<Integer> lineNumbers = new TreeSet<Integer>();
-		for (Statement s : slice) {
-			if (s.getKind() == Statement.Kind.NORMAL) { // ignore special kinds of statements
-				int bcIndex, instructionIndex = ((NormalStatement) s).getInstructionIndex();
-				try {
-					bcIndex = ((ShrikeBTMethod) s.getNode().getMethod()).getBytecodeIndex(instructionIndex);
-					try {
-						int srcLineNumber = s.getNode().getMethod().getLineNumber(bcIndex);
-						System.err.println ( "Source line number = " + srcLineNumber);
-						lineNumbers.add(srcLineNumber);
-//						System.err.println("Source line = " + srcFileLines.get(srcLineNumber-1));
-					} catch (Exception e) {
-						System.err.println("Bytecode index no good");
-						System.err.println(e.getMessage());
-					}
-				} catch (Exception e) {
-//					System.err.println("it's probably not a BT method (e.g. it's a fakeroot method)");
-//					System.err.println(e.getMessage());
-				}
-			}
-		}
-		
-		System.out.println("lines" + lineNumbers);
-		Iterator<Integer> iter = lineNumbers.iterator();
-		while (iter.hasNext()) {
-			int lineNum = iter.next();
-			if (lineNum != -1) {
-				System.out.println("line " + lineNum + ": " + srcFileLines.get(lineNum-1));
-			}
-		}
-
-	}
-	
 	private void createSlice() throws IOException, ClassHierarchyException, CancelException {
-		File f = new File("./src/slicer/Java60RegressionExclusions.txt");
+		String path = "./src/slicer/Java60RegressionExclusions.txt";
+		path.replace('/', File.pathSeparatorChar);
+		File f = new File(path);
 		File exFile = new FileProvider().getFile(f.getAbsolutePath());
 		AnalysisScope scope = AnalysisScopeReader.makeJavaBinaryAnalysisScope(jarPath + File.separator + jarName, exFile);
 		IClassHierarchy cha = ClassHierarchy.make(scope);
@@ -264,12 +230,6 @@ public class FlagSlicer {
 	            // compute forward and backward slice for all statements inside branch
 	        	if(start <= s.iindex && s.iindex < end) {
 	        		processStatement(builder, cg, node, s, result);
-	        		
-	        		// Not working in "complex" functions
-//			        Collection<Statement> computeFwdSlice =
-//			        		Slicer.computeForwardSlice(statement, cg, builder.getPointerAnalysis(),
-//		        						DataDependenceOptions.FULL, ControlDependenceOptions.NONE);
-//			        result.addAll(computeFwdSlice);
 	        	}
 		      }
 
@@ -283,23 +243,22 @@ public class FlagSlicer {
 	        			new LinkedHashSet<Statement>();
 	        	processStatement(builder, cg, node, s, tmpSlice);
 
-		        TreeSet<Integer> tmpLines = gatherSlicedLines(tmpSlice);	        
+		        TreeSet<Integer> tmpLines = gatherSlicedLines(tmpSlice);	
+		        
 		        for(Integer i : tmpLines) {
-		        	if(result.contains(i)) {
-		        		resultLines.add(i);
+		        	// if line depends on some line in the slice, all the 
+		        	// lines it depends on should be added
+		        	if(resultLines.contains(i)) {
+		        		resultLines.addAll(tmpLines);
+		        		break;
 		        	}
 		        }
 	        }
-	        
-//            dumpSlice(result);
 			
 			printSlicedLines(resultLines);
 		} catch (IllegalArgumentException | CallGraphBuilderCancelException e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
-		}
-		
-		printSlicedLines(result);	
+		}	
 	}
 	
 	private void processStatement(CallGraphBuilder builder, 
@@ -311,13 +270,13 @@ public class FlagSlicer {
 		if(s.iindex == -1) {
 			return;
 		}
-		System.out.println(s.iindex);
+
 		// add current statement
 		collect.add(statement);
 		Collection<Statement> computeBackwardSlice = 
 				Slicer.computeBackwardSlice(statement, cg, builder.getPointerAnalysis(),
 						DataDependenceOptions.FULL, ControlDependenceOptions.NONE);
-		System.out.println(statement + "; " + s.iindex + "; ");
+		
 		collect.addAll(computeBackwardSlice);
 	}
 
@@ -359,9 +318,6 @@ public class FlagSlicer {
 					"Usage: <jarPath> <jarFileName> <fileName> <packageName> <className> <methodName> <flagName>");
 			System.exit(1);
 		}
-		
-		System.out.println(args[0] + ", " + args[1] + ", " + args[2] + ", " + args[3] + ", " + args[4] +
-				", " + args[5] + ", " + args[6]);
 		
 		FlagSlicer t = new FlagSlicer(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
 		
