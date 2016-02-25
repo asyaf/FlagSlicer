@@ -4,21 +4,28 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.PrintWriter;
 import java.nio.charset.Charset;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Enumeration;
-import java.util.Set;
-import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.jar.*;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Options;
+
+import com.github.javaparser.ParseException;
 import com.ibm.wala.ipa.callgraph.impl.Util;
 import com.ibm.wala.classLoader.IMethod;
 import com.ibm.wala.classLoader.ShrikeBTMethod;
@@ -34,7 +41,6 @@ import com.ibm.wala.ipa.cha.ClassHierarchy;
 import com.ibm.wala.ipa.cha.ClassHierarchyException;
 import com.ibm.wala.ipa.cha.IClassHierarchy;
 import com.ibm.wala.ipa.slicer.NormalStatement;
-import com.ibm.wala.ipa.slicer.SDG;
 import com.ibm.wala.ipa.slicer.Slicer;
 import com.ibm.wala.ipa.slicer.Statement;
 import com.ibm.wala.ipa.slicer.Slicer.ControlDependenceOptions;
@@ -58,10 +64,13 @@ public class FlagSlicer {
 	String className;
 	String methodName;
 	String flagName;
+	String newJarPath;
+	String newJarName;
+	String outputSlicePath;
 	ArrayList<String> srcFileLines;
 	
 	public FlagSlicer(String jarFilePath, String jarFileName, String file, String packageN,
-			String classN, String method, String flag) {
+			String classN, String method, String flag, String slicePath) {
 		jarPath = jarFilePath;
 		jarName = jarFileName;
 		fileName = file;
@@ -69,13 +78,13 @@ public class FlagSlicer {
 		className = classN;
 		methodName = method;
 		flagName = flag;
+		outputSlicePath = slicePath;
 		srcFileLines = new ArrayList<String>();
 	}
 	
 	private void uploadFileToMem() throws IOException {
 		// Find the file inside the jar and extract it
-		// TODO - use the jar path passed to get the file path
-		JarFile jar = new JarFile(jarPath + File.separator + jarName);
+		JarFile jar = new JarFile(newJarPath + File.separator + newJarName);
 		String pathToFile = "";
 		Enumeration<JarEntry> entries = jar.entries();
 		while (entries.hasMoreElements()) {
@@ -83,7 +92,8 @@ public class FlagSlicer {
 			if (!file.getName().endsWith(fileName)) {
 				continue;
 			}
-			pathToFile = jarPath + File.separator + fileName;
+			pathToFile = newJarPath + File.separator + fileName;
+			System.out.println("path to file: " + pathToFile);
 			File f = new File(pathToFile);
 			InputStream is = jar.getInputStream(file); // get the input stream
 			FileOutputStream fos = new FileOutputStream(f);
@@ -133,7 +143,6 @@ public class FlagSlicer {
 		return flagInd;
 	}
 	
-	// output result as readable code
 	private TreeSet<Integer> gatherSlicedLines(Collection<Statement> slice) {
 		TreeSet<Integer> lineNumbers = new TreeSet<Integer>();
 		for (Statement s : slice) {
@@ -144,7 +153,6 @@ public class FlagSlicer {
 					try {
 						int srcLineNumber = s.getNode().getMethod().getLineNumber(bcIndex);
 						lineNumbers.add(srcLineNumber);
-//						System.err.println("Source line = " + srcFileLines.get(srcLineNumber-1));
 					} catch (Exception e) {
 						System.err.println("Bytecode index no good");
 						System.err.println(e.getMessage());
@@ -159,8 +167,10 @@ public class FlagSlicer {
 		return lineNumbers;
 	}
 	
-	private void printSlicedLines(TreeSet<Integer> lineNumbers) {
-		System.out.println("Result slice: ");
+	// format result as readable code
+	private String formatSlice(TreeSet<Integer> lineNumbers) {
+		String res = "Slice for: " + this.fileName + " ; " + this.packageName + "."  
+				+ this.className + "." + this.methodName + "; flag name: " + this.flagName + "\n";
 		Iterator<Integer> iter = lineNumbers.iterator();
 		while (iter.hasNext()) {
 			int lineNum = iter.next();
@@ -170,14 +180,16 @@ public class FlagSlicer {
 			System.out.println("line " + lineNum + ": " + 
 					srcFileLines.get(lineNum-1));
 		}
+		
+		return res;
 	}
 	
-	private void createSlice() throws IOException, ClassHierarchyException, CancelException {
+	private String createSlice() throws IOException, ClassHierarchyException, CancelException {
 		String path = "./src/slicer/Java60RegressionExclusions.txt";
 		path.replace('/', File.pathSeparatorChar);
 		File f = new File(path);
 		File exFile = new FileProvider().getFile(f.getAbsolutePath());
-		AnalysisScope scope = AnalysisScopeReader.makeJavaBinaryAnalysisScope(jarPath + File.separator + jarName, exFile);
+		AnalysisScope scope = AnalysisScopeReader.makeJavaBinaryAnalysisScope(jarPath + File.pathSeparator + jarName, exFile);
 		IClassHierarchy cha = ClassHierarchy.make(scope);
 		Iterable<Entrypoint> entrypoints = com.ibm.wala.ipa.callgraph.impl.Util.makeMainEntrypoints(
 				scope, cha, "L" + packageName + "/" + className);
@@ -189,6 +201,8 @@ public class FlagSlicer {
 		// gather statements in order to be able to process function end
         Collection<SSAInstruction> funcEnd = new LinkedHashSet<SSAInstruction>();    
 		
+        TreeSet<Integer> resultLines = new TreeSet<Integer>();
+        
 		try {
 			cg = builder.makeCallGraph(options, null);
 			Atom name = Atom.findOrCreateUnicodeAtom(methodName);
@@ -234,7 +248,7 @@ public class FlagSlicer {
 		      }
 
 	        // lines of slice computed so far
-	        TreeSet<Integer> resultLines = gatherSlicedLines(result);     
+	        resultLines = gatherSlicedLines(result);     
 
 	        // check if end of function depends on statements 
 	        // in the computed slice
@@ -255,10 +269,11 @@ public class FlagSlicer {
 		        }
 	        }
 			
-			printSlicedLines(resultLines);
 		} catch (IllegalArgumentException | CallGraphBuilderCancelException e) {
 			e.printStackTrace();
 		}	
+		
+		return formatSlice(resultLines);
 	}
 	
 	private void processStatement(CallGraphBuilder builder, 
@@ -297,34 +312,125 @@ public class FlagSlicer {
 		Assertions.UNREACHABLE("failed to find method " + name);
 		return null;
 	}
-
-	public static void dumpSlice(Collection<Statement> slice) {
-		dumpSlice(slice, new PrintWriter(System.err));
+	
+	public void writeSlice(String slice) throws IOException {
+		File file = new File(this.outputSlicePath);
+		FileWriter writer = new FileWriter(file);
+		writer.write(slice);
+		writer.close();
 	}
-
-	public static void dumpSlice(Collection<Statement> slice, PrintWriter w) {
-		w.println("SLICE:\n");
-		int i = 1;
-		for (Statement s : slice) {
-			String line = (i++) + "   " + s;
-			w.println(line);
-			w.flush();
-		}
+	
+	public void sliceMethod() throws ParseException, IOException, ClassHierarchyException, CancelException, InterruptedException {
+		// 1. preprocess the code
+		String flagHelperName = this.flagName + "_temp";
+		JavaCodeTransformer codeTrs = new JavaCodeTransformer();
+		String jarNameNoExtension = this.jarName.substring(0, this.jarName.lastIndexOf('.'));
+		String fileNameNoExtension = this.fileName.substring(0, this.fileName.lastIndexOf('.'));
+		String res = codeTrs.Preprocess(this.jarPath, jarNameNoExtension, fileNameNoExtension, this.className, 
+				this.methodName, this.flagName, flagHelperName);
+		Path path = Paths.get(res);
+		this.newJarName = path.getFileName().toString();
+		this.newJarPath = path.getParent().toString();
+		// 2. upload it to memory
+		uploadFileToMem();
+		// 3. perform slicing
+		String slice = createSlice();
+		// 4. write the slice to a file
+		writeSlice(slice);
+		// 4. postprocess the slice
+		codeTrs.Postprocess(this.outputSlicePath);
 	}
 	
 	public static void main(String args[]) {
-		if(args.length != 7) {
-			System.err.println(
-					"Usage: <jarPath> <jarFileName> <fileName> <packageName> <className> <methodName> <flagName>");
-			System.exit(1);
-		}
+		Options options = new Options();
+		options.addOption("p", "jarPath", true, "Full path to the directory containing the jar file which contains the code to slice");
+		options.addOption("j", "jarFileName", true, "The name of the jar file containing the code to slice (including .jar extension)");
+		options.addOption("f", "fileName", true, "The name of the file containing the code to slice. The name should include the .java extension. File must be in the jar file provided.");
+		options.addOption("k", "packageName", true, "The name of the package containing the class to slice");
+		options.addOption("c", "className", true, "The name of the class containing the method to slice");
+		options.addOption("m", "methodName", true, "The name of the method to slice");
+		options.addOption("l", "flagName", true, "The name of the flag (and input parameter of the method) according to which to slice");
+		options.addOption("o", "outputPath", true, "The path to the output file which will contain the slice (the file should not exist yet)");
 		
-		FlagSlicer t = new FlagSlicer(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
-		
+		CommandLineParser parser = new DefaultParser();
+		CommandLine cmd;
 		try {
-			t.uploadFileToMem();
-			t.createSlice();
-		} catch (ClassHierarchyException | IOException | CancelException e) {
+			cmd = parser.parse(options,  args);
+			HelpFormatter help = new HelpFormatter();
+			
+			String jarPath = "";
+			if (cmd.hasOption("p")) {
+				jarPath = cmd.getOptionValue("p");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String jarFileName = "";
+			if (cmd.hasOption("j")) {
+				jarFileName = cmd.getOptionValue("j");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String fileName = "";
+			if (cmd.hasOption("f")) {
+				fileName = cmd.getOptionValue("f");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String packageName = "";
+			if (cmd.hasOption("k")) {
+				packageName = cmd.getOptionValue("k");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String className = "";
+			if (cmd.hasOption("c")) {
+				className = cmd.getOptionValue("c");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String methodName = "";
+			if (cmd.hasOption("m")) {
+				methodName = cmd.getOptionValue("m");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String flagName = "";
+			if (cmd.hasOption("l")) {
+				flagName = cmd.getOptionValue("l");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			String outputPath = "";
+			if (cmd.hasOption("o")) {
+				outputPath = cmd.getOptionValue("o");
+			} else {
+				help.printHelp("flagSlicer", options);
+				System.exit(1);
+			}
+			
+			FlagSlicer t = new FlagSlicer(jarPath, jarFileName, fileName, packageName, className, methodName, flagName, outputPath);
+			t.sliceMethod();
+
+		} catch (org.apache.commons.cli.ParseException e) {
+			// TODO Auto-generated catch block
+			System.err.println("failed to parse arguments: " + e.getMessage());
+			e.printStackTrace();
+		} catch (ClassHierarchyException  | IOException | CancelException | ParseException | InterruptedException e) {
+			// TODO Auto-generated catch block
 			System.err.println("Error: can't slice program");
 			System.err.println(e.getMessage());
 			System.exit(1);
